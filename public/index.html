@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Link Sentinel - リンク切れチェッカー</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+    <div class="container">
+
+        <header>
+            <h1>Link Sentinel</h1>
+            <p class="subtitle">再帰的リンクチェッカー</p>
+        </header>
+
+        <section class="card input-section">
+            <div class="input-group" style="flex-wrap: wrap;">
+                <input type="url" id="urlInput" placeholder="http://example.com" required autocomplete="off"
+                    style="flex: 2; min-width: 200px;">
+                <input type="number" id="depthInput" placeholder="深さ (デフォルト: 3)" min="1" max="10"
+                    style="flex: 0.5; min-width: 80px; padding: 12px; border: 1px solid #d1d5db; border-radius: 8px;">
+                <input type="text" id="allowedDomainsInput" placeholder="許可ドメイン (カンマ区切り)"
+                    style="flex: 1; min-width: 150px; padding: 12px; border: 1px solid #d1d5db; border-radius: 8px;">
+                <button id="startBtn" style="flex: 0.5; min-width: 100px;">スキャン開始</button>
+            </div>
+
+            <div class="status-area" id="statusArea" style="margin-top: 16px;">
+                <span id="statusText">待機中</span>
+                <div class="status-metrics">
+                    <span class="metric" id="crawledCount">ページ数: 0</span>
+                    <span class="metric" id="queueSize">キュー: 0</span>
+                </div>
+            </div>
+        </section>
+
+        <section class="card log-section" id="logSection">
+            <h3 style="margin-bottom: 8px; color: var(--text-color);">処理ログ</h3>
+            <div class="log-container" id="log">
+                <!-- Logs will appear here -->
+            </div>
+        </section>
+
+        <section class="card results-section" id="resultsSection">
+            <div class="results-header">
+                <h3 style="color: var(--error-color);">検出されたリンク切れ</h3>
+                <span id="resultCount"
+                    style="background: #fee2e2; color: #991b1b; padding: 2px 8px; border-radius: 99px; font-size: 0.8rem; font-weight: 600;">0</span>
+            </div>
+            <div class="results-list" id="results">
+                <!-- Results will appear here -->
+            </div>
+        </section>
+
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        const startBtn = document.getElementById('startBtn');
+        const urlInput = document.getElementById('urlInput');
+
+        const logDiv = document.getElementById('log');
+        const resultsDiv = document.getElementById('results');
+        const statusText = document.getElementById('statusText');
+        const crawledCountSpan = document.getElementById('crawledCount');
+        const queueSizeSpan = document.getElementById('queueSize');
+        const resultCountSpan = document.getElementById('resultCount');
+
+        let isRunning = false;
+        let brokenCount = 0;
+
+        startBtn.addEventListener('click', () => {
+            if (isRunning) {
+                // Stop functionality could be added
+                socket.emit('stop-crawl');
+                return;
+            }
+
+            const url = urlInput.value;
+            const depth = parseInt(document.getElementById('depthInput').value) || 3;
+            const domainsInput = document.getElementById('allowedDomainsInput').value;
+            const allowedDomains = domainsInput.split(',').map(d => d.trim()).filter(d => d);
+
+            if (!url) return alert('URLを入力してください');
+
+            // Reset UI
+            logDiv.innerHTML = '';
+            resultsDiv.innerHTML = '';
+            statusText.textContent = '初期化中...';
+            crawledCountSpan.textContent = 'ページ数: 0';
+            queueSizeSpan.textContent = 'キュー: 0';
+            resultCountSpan.textContent = '0';
+            brokenCount = 0;
+
+            startBtn.textContent = '停止';
+            startBtn.style.background = '#ef4444'; // Red for stop
+            isRunning = true;
+
+            socket.emit('start-crawl', {
+                url: url,
+                options: {
+                    maxDepth: depth,
+                    allowedDomains: allowedDomains
+                }
+            });
+        });
+
+        socket.on('log', (msg) => {
+            const div = document.createElement('div');
+            div.className = 'log-entry';
+            div.textContent = `> ${msg}`;
+            logDiv.appendChild(div);
+            logDiv.scrollTop = logDiv.scrollHeight;
+        });
+
+        socket.on('progress', (data) => {
+            statusText.textContent = `処理中: ${data.url}`;
+            crawledCountSpan.textContent = `ページ数: ${data.count}`;
+            queueSizeSpan.textContent = `キュー: ${data.queueSize}`;
+        });
+
+        socket.on('broken-link', (data) => {
+            brokenCount++;
+            resultCountSpan.textContent = brokenCount;
+
+            const item = document.createElement('div');
+            item.className = 'result-item';
+
+            const statusBadge = document.createElement('div');
+            statusBadge.className = 'status-badge';
+            statusBadge.textContent = data.status;
+
+            const content = document.createElement('div');
+            content.className = 'result-main';
+            content.innerHTML = `
+                <a href="${data.url}" target="_blank" class="broken-url">${data.url}</a>
+                <span class="source-info">発見元: <a href="${data.source}" target="_blank">${data.source}</a></span>
+            `;
+
+            item.appendChild(content);
+            item.appendChild(statusBadge);
+
+            resultsDiv.prepend(item); // Newest first
+        });
+
+        socket.on('finished', (data) => {
+            statusText.textContent = '完了しました';
+            resetBtn();
+            const div = document.createElement('div');
+            div.className = 'log-entry';
+            div.style.color = '#10b981';
+            div.textContent = `=== 完了: ${data.brokenLinks.length} 個のリンク切れが見つかりました ===`;
+            logDiv.appendChild(div);
+            logDiv.scrollTop = logDiv.scrollHeight;
+        });
+
+        socket.on('error', (msg) => {
+            const div = document.createElement('div');
+            div.className = 'log-entry error';
+            div.textContent = `エラー: ${msg}`;
+            logDiv.appendChild(div);
+            logDiv.scrollTop = logDiv.scrollHeight;
+
+            // If critical error (not handled by loop), maybe reset?
+            // checking if user can retry
+            if (msg === 'Internal Crawler Error' || msg.includes('無効')) {
+                resetBtn();
+            }
+        });
+
+        function resetBtn() {
+            isRunning = false;
+            startBtn.textContent = 'スキャン開始';
+            startBtn.style.background = ''; // Reset to default CSS
+        }
+    </script>
+</body>
+
+</html>
